@@ -1,132 +1,83 @@
-version: '3.7'
-
+version: '3.8'
 services:
 
+  # PBX / Asterisk — для приёма/отправки звонков
   asterisk:
-    platform: linux/amd64
     image: mlan/asterisk:full
-    networks: 
-      - freetalkbot
+    container_name: ai-call-center-asterisk
     ports:
-      - 6569:4569/udp
-      - 6050:5060/udp
-      - 10000-10099:10000-10099/udp
-    cap_add:
-      - sys_ptrace                          # Only here to help testing
-      - net_admin                           # Allow NFT, used by AutoBan
-      - net_raw                             # Allow NFT, used by AutoBan
+      - "5060:5060/udp"
+      - "10000-10099:10000-10099/udp"
+    volumes:
+      - ./asterisk-config:/etc/asterisk
+    networks:
+      - callnet
+
+  # PostgreSQL — хранение логов и аналитики
+  postgres:
+    image: postgres:15
+    container_name: ai-call-center-postgres
+    restart: unless-stopped
     environment:
-      - SYSLOG_LEVEL=${SYSLOG_LEVEL-4}      # Logging
-      - HOSTNAME=asterisk.docker.localhost
+      POSTGRES_USER: calluser
+      POSTGRES_PASSWORD: callpass
+      POSTGRES_DB: callcenter
     volumes:
-      - asterisk-conf:/srv                      # Persistent storage
-      - ./asterisk/container-config:/etc/asterisk
-      - ./pulse:/run/pulse:rshared          # Use host audio
-      - /etc/localtime:/etc/localtime:ro    # Use host timezone    
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - callnet
 
-  whisper_cpu:
+  # Whisper-local ASR
+  whisper-asr:
     image: fedirz/faster-whisper-server:latest-cpu
+    container_name: ai-call-center-whisper
     restart: unless-stopped
-    profiles:
-      - cpu
-    env_file:
-      - .env
     ports:
-      - 8000:8000
-    networks: 
-      - freetalkbot
-    volumes:
-      - hugging_face_cache:/root/.cache/huggingface
+      - "8000:8000"
+    networks:
+      - callnet
 
-  whisper_gpu:
-    image: fedirz/faster-whisper-server:latest-cuda
-    restart: unless-stopped
-    profiles:
-      - gpu
-    env_file:
-      - .env
-    ports:
-      - 8000:8000
-    networks: 
-      - freetalkbot
-    volumes:
-      - hugging_face_cache:/root/.cache/huggingface
-    
-  gobot_voip:
-    build:
-      context: .
-    platform: linux/amd64
-    networks: 
-      - freetalkbot
-    command: ["freetalkbot", "init", "-c", "audio"]
-    ports:
-      - "8080:8080"
-    env_file:
-      - .env
-    volumes:
-      - ./data:/app/data
-
-  gobot_whatsapp:
-    build:
-      context: .
-    platform: linux/amd64
-    networks: 
-      - freetalkbot
-    command: ["freetalkbot", "init", "-c", "whatsapp"]
-    ports:
-      - "443:443"
-      - "5034:5034"
-    env_file:
-      - .env
-    volumes:
-      - ./data:/app/data
-
+  # Rasa NLU
   rasa:
-    build:
-      context: ./assistants/rasa
+    image: rasa/rasa:3.6.2-full
+    container_name: ai-call-center-rasa
+    restart: unless-stopped
     env_file:
       - .env
     volumes:
       - ./assistants/rasa:/app
-    command: 
-      - run
-      - --enable-api 
-      - --cors 
-      - "*"
     ports:
       - "5005:5005"
     networks:
-      - freetalkbot
+      - callnet
 
-  rasa-actions-server:
-    image: khalosa/rasa-aarch64:3.5.2
+  # Rasa Actions Server
+  rasa-actions:
+    image: rasa/rasa-sdk:3.6.2
+    container_name: ai-call-center-rasa-actions
+    restart: unless-stopped
     env_file:
       - .env
     volumes:
       - ./assistants/rasa:/app
-    command: 
-      - run 
-      - actions
     ports:
       - "5055:5055"
     networks:
-      - freetalkbot
+      - callnet
 
-  anthropic:
-    build:
-      context: ./assistants/anthropic
-    env_file:
-      - .env
+  # Silero TTS (через coqui-ai/tts образ)
+  tts:
+    image: coqui/tts:latest
+    container_name: ai-call-center-tts
+    restart: unless-stopped
     ports:
-      - "8088:8088"
+      - "6000:6000"
     networks:
-      - freetalkbot
+      - callnet
 
 volumes:
-  asterisk-conf:
-  app_data:
-  hugging_face_cache:
+  pgdata:
 
 networks:
-  freetalkbot:
+  callnet:
     driver: bridge
